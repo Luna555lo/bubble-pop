@@ -560,23 +560,6 @@
 
     function handlePop(px, py) {
         const now = Date.now();
-
-        // 处理弹窗点击
-        if (gameState === 'levelComplete') {
-            if (now - lastProcessedTime < 300) return;
-            lastProcessedTime = now;
-            advanceLevel();
-            return;
-        }
-        if (gameState === 'gameOver') {
-            if (now - lastProcessedTime < 300) return;
-            lastProcessedTime = now;
-            restartGame();
-            return;
-        }
-
-        // 正常游戏中
-        if (gameState !== 'playing') return;
         if (now - lastProcessedTime < 50) return;
         lastProcessedTime = now;
 
@@ -624,40 +607,49 @@
         }
     }
 
-    function onCanvasPointer(e) {
-        e.preventDefault();
-        handlePop(e.clientX, e.clientY);
-    }
+    // =====================================================
+    // 统一事件入口：直接监听 document，不怕弹窗遮挡
+    // =====================================================
+    let lastOverlayAction = 0;
 
-    function onCanvasTouch(e) {
+    document.addEventListener('pointerdown', function(e) {
         e.preventDefault();
-        if (e.touches.length > 0) handlePop(e.touches[0].clientX, e.touches[0].clientY);
-    }
 
-    canvas.addEventListener('pointerdown', onCanvasPointer);
-    canvas.addEventListener('touchstart', onCanvasTouch);
-
-    // 弹窗点击：直接绑定到 overlay 上，不再依赖 canvas
-    document.getElementById('levelCompleteOverlay').addEventListener('pointerdown', function(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        advanceLevel();
+        if (gameState === 'levelComplete') {
+            if (Date.now() - lastOverlayAction < 500) return;
+            lastOverlayAction = Date.now();
+            advanceLevel();
+            return;
+        }
+        if (gameState === 'gameOver') {
+            if (Date.now() - lastOverlayAction < 500) return;
+            lastOverlayAction = Date.now();
+            restartGame();
+            return;
+        }
+        if (gameState === 'playing') {
+            handlePop(e.clientX, e.clientY);
+        }
     });
-    document.getElementById('levelCompleteOverlay').addEventListener('touchstart', function(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        advanceLevel();
-    });
 
-    document.getElementById('gameOverOverlay').addEventListener('pointerdown', function(e) {
+    document.addEventListener('touchstart', function(e) {
         e.preventDefault();
-        e.stopPropagation();
-        restartGame();
-    });
-    document.getElementById('gameOverOverlay').addEventListener('touchstart', function(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        restartGame();
+
+        if (gameState === 'levelComplete') {
+            if (Date.now() - lastOverlayAction < 500) return;
+            lastOverlayAction = Date.now();
+            advanceLevel();
+            return;
+        }
+        if (gameState === 'gameOver') {
+            if (Date.now() - lastOverlayAction < 500) return;
+            lastOverlayAction = Date.now();
+            restartGame();
+            return;
+        }
+        if (gameState === 'playing' && e.touches.length > 0) {
+            handlePop(e.touches[0].clientX, e.touches[0].clientY);
+        }
     });
 
     // =====================================================
