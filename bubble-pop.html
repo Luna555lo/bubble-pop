@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <!-- 微信 X5 浏览器优化：全屏模式、屏幕方向 -->
+    <meta name="x5-fullscreen" content="true">
+    <meta name="x5-orientation" content="portrait">
+    <title>捏泡泡 - 解压小游戏</title>
+    <style>
+        /* ===== 页面基础样式 ===== */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: linear-gradient(135deg, #e8d5f5 0%, #c5e3f6 50%, #d4f0e8 100%);
+            height: 100vh;
+            overflow: hidden;
+            font-family: 'Arial', sans-serif;
+            user-select: none;
+            cursor: crosshair;
+            /* 手机端优化 */
+            -webkit-tap-highlight-color: transparent; /* 去掉点击时的蓝色高亮 */
+            -webkit-touch-callout: none;              /* 禁止 iOS 长按弹出菜单 */
+            /* 微信等 WebView 内撑满屏幕 */
+            position: fixed;
+            width: 100%;
+        }
+
+        /* ===== 游戏画布 ===== */
+        canvas {
+            display: block;           /* 去除图片底部缝隙 */
+            position: absolute;
+            top: 0;
+            left: 0;
+            touch-action: none;       /* 禁止手指滑动时页面滚动/缩放 */
+        }
+
+        /* ===== 顶部UI面板：分数和连击 ===== */
+        .ui-panel {
+            position: absolute;
+            top: 30px;
+            left: 50%;
+            transform: translateX(-50%);   /* 水平居中技巧 */
+            display: flex;
+            gap: 40px;                     /* 两个元素之间的间距 */
+            z-index: 10;                   /* 确保浮在画布上方 */
+            pointer-events: none;          /* 让点击穿透到画布上 */
+        }
+
+        .ui-item {
+            text-align: center;
+            color: #5a4a7a;
+            background: rgba(255, 255, 255, 0.6);
+            backdrop-filter: blur(10px);   /* 毛玻璃效果 */
+            padding: 12px 28px;
+            border-radius: 50px;           /* 圆角胶囊形状 */
+            box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+        }
+
+        .ui-label {
+            font-size: 13px;
+            letter-spacing: 2px;           /* 字母间距 */
+            opacity: 0.7;
+        }
+        .ui-value {
+            font-size: 36px;
+            font-weight: bold;
+            line-height: 1.2;
+            transition: opacity 0.3s ease;
+        }
+
+        /* ===== 底部提示文字 ===== */
+        .hint {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #8a7aaa;
+            font-size: 16px;
+            letter-spacing: 1px;
+            animation: hintFade 2s ease-in-out infinite;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        /* 提示文字的呼吸动画 */
+        @keyframes hintFade {
+            0%, 100% { opacity: 0.5; }
+            50%      { opacity: 1; }
+        }
+
+        /* ===== 连击弹出特效 ===== */
+        .combo-pop {
+            position: absolute;
+            pointer-events: none;
+            font-size: 48px;
+            font-weight: bold;
+            color: #ff6b9d;
+            text-shadow: 0 2px 10px rgba(255,107,157,0.5);
+            animation: comboUp 0.8s ease-out forwards;
+            z-index: 20;
+        }
+
+        @keyframes comboUp {
+            0%   { opacity: 1; transform: translate(-50%, 0) scale(0.5); }
+            50%  { opacity: 1; transform: translate(-50%, -40px) scale(1.2); }
+            100% { opacity: 0; transform: translate(-50%, -100px) scale(1); }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 屏幕上方的分数面板 -->
+    <div class="ui-panel">
+        <div class="ui-item">
+            <div class="ui-label">💥 得分</div>
+            <div class="ui-value" id="score">0</div>
+        </div>
+        <div class="ui-item">
+            <div class="ui-label">🔥 连击</div>
+            <div class="ui-value" id="combo">0</div>
+        </div>
+    </div>
+
+    <!-- 底部操作提示 -->
+    <div class="hint" id="hint">点一下泡泡试试看 👆</div>
+
+    <!-- 游戏画布，所有动画都画在这上面 -->
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+    // =====================================================
+    // 第一步：获取画布和绘图工具箱
+    // =====================================================
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    // ctx 就是我们的"画笔"，所有泡泡和粒子都用它画
+
+    // 让画布撑满整个窗口
+    function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+    // 当用户缩放窗口时，画布也跟着变大小
+
+    // =====================================================
+    // 第二步：游戏状态变量
+    // =====================================================
+    let score = 0;          // 当前得分
+    let comboCount = 0;     // 连续点中次数（连击）
+    let lastPopTime = 0;    // 上一次点中泡泡的时间戳
+    const COMBO_TIMEOUT = 1500; // 1.5秒内没点中，连击就断掉（毫秒）
+
+    // 存储所有活着的泡泡和粒子
+    let bubbles = [];       // 正在飘的泡泡
+    let particles = [];     // 泡泡炸开后的粒子碎屑
+
+    // 控制泡泡刷出速度
+    let spawnInterval = 800;        // 初始每0.8秒出一个泡泡（毫秒）
+    let lastSpawnTime = 0;          // 上次刷出泡泡的时间
+    const MIN_SPAWN_INTERVAL = 250; // 最快每0.25秒出一个（难度上限）
+
+    // =====================================================
+    // 第三步：工具函数
+    // =====================================================
+
+    /** 生成 min~max 之间的随机数 */
+    function random(min, max) {
+        return Math.random() * (max - min) + min;
+    }
+
+    /** 生成随机的泡泡颜色（柔和的糖果色系） */
+    function randomColor() {
+        // hue 是色相（0-360），控制颜色种类
+        const hue = random(0, 360);
+        // 饱和度50-70%，亮度70-85%，出来的颜色都是柔和的马卡龙色调
+        return `hsla(${hue}, ${random(50, 70)}%, ${random(70, 85)}%, 0.75)`;
+    }
+
+    /** 计算两点之间的距离（用来判断鼠标有没有点到泡泡） */
+    function distance(x1, y1, x2, y2) {
+        const dx = x1 - x2;
+        const dy = y1 - y2;
+        return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    // =====================================================
+    // 第四步：泡泡类 —— 一个泡泡就是一个对象
+    // =====================================================
+    class Bubble {
+        constructor() {
+            // 出生位置：屏幕底部，随机水平位置
+            this.x = random(60, canvas.width - 60);
+            this.y = canvas.height + random(20, 80);
+
+            // 泡泡半径：随机大小，从20到55像素
+            this.radius = random(20, 55);
+
+            // 上升速度：大泡泡飘得慢，小泡泡飘得快（更符合直觉）
+            this.speed = random(0.4, 1.2) * (35 / this.radius);
+
+            // 左右摆动参数
+            this.drift = random(-0.5, 0.5);   // 水平飘移速度
+            this.driftPhase = random(0, Math.PI * 2); // 摆动的起始角度
+
+            // 外观
+            this.color = randomColor();
+            this.isPopped = false;  // 是否已经被点爆了
+        }
+
+        /** 更新位置：每一帧都往上飘一点点 */
+        update() {
+            // 垂直上升
+            this.y -= this.speed;
+
+            // 轻微左右摆动（用正弦波模拟自然飘动）
+            this.driftPhase += 0.02;
+            this.x += Math.sin(this.driftPhase) * 0.3 + this.drift;
+
+            // 限制在屏幕左右边界内，不会飘出去
+            if (this.x < this.radius) {
+                this.x = this.radius;
+                this.drift = Math.abs(this.drift); // 反弹，改成向右飘
+            }
+            if (this.x > canvas.width - this.radius) {
+                this.x = canvas.width - this.radius;
+                this.drift = -Math.abs(this.drift); // 反弹，改成向左飘
+            }
+        }
+
+        /** 把泡泡画到画布上 */
+        draw() {
+            ctx.save(); // 保存当前画笔状态
+
+            // --- 画泡泡主体 ---
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+            ctx.fillStyle = this.color;
+            ctx.fill();
+
+            // --- 画高光（左上角的小白点，让它看起来像真的泡泡） ---
+            ctx.beginPath();
+            const highlightX = this.x - this.radius * 0.3;
+            const highlightY = this.y - this.radius * 0.3;
+            const highlightRadius = this.radius * 0.25;
+            ctx.arc(highlightX, highlightY, highlightRadius, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+            ctx.fill();
+
+            // --- 画泡泡边缘的光泽 ---
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            ctx.restore(); // 恢复画笔状态
+        }
+
+        /** 判断某个坐标是否在这个泡泡内部 */
+        containsPoint(px, py) {
+            return distance(px, py, this.x, this.y) < this.radius;
+        }
+    }
+
+    // =====================================================
+    // 第五步：粒子类 —— 泡泡炸开后的碎屑
+    // =====================================================
+    class Particle {
+        constructor(x, y, color) {
+            this.x = x;
+            this.y = y;
+
+            // 爆炸方向：随机角度，往外飞
+            const angle = random(0, Math.PI * 2);
+            const speed = random(2, 7);
+            this.vx = Math.cos(angle) * speed;  // 水平速度
+            this.vy = Math.sin(angle) * speed;  // 垂直速度
+
+            this.life = 1.0;          // 生命值，从1递减到0
+            this.decay = random(0.02, 0.05); // 每帧衰减的量
+            this.radius = random(3, 8);
+            this.color = color;
+        }
+
+        update() {
+            this.x += this.vx;
+            this.y += this.vy;
+            this.vy += 0.08;    // 模拟轻微重力，粒子会往下掉
+            this.life -= this.decay;
+        }
+
+        draw() {
+            ctx.save();
+            ctx.globalAlpha = this.life; // 透明度随生命值降低
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+            ctx.fillStyle = this.color;
+            ctx.fill();
+            ctx.restore();
+        }
+
+        /** 粒子是否已经"死"了（完全透明） */
+        isDead() {
+            return this.life <= 0;
+        }
+    }
+
+    // =====================================================
+    // 第六步：在指定位置创建爆炸粒子群
+    // =====================================================
+    function createExplosion(x, y, color) {
+        // 炸出15~25个小碎屑
+        const count = Math.floor(random(15, 25));
+        for (let i = 0; i < count; i++) {
+            particles.push(new Particle(x, y, color));
+        }
+    }
+
+    // =====================================================
+    // 第七步：处理点击（兼容鼠标 + 手指 + 微信 WebView）
+    // =====================================================
+    let lastProcessedTime = 0; // 防止 pointerdown 和 touchstart 重复触发
+
+    function handlePop(px, py) {
+        const now = Date.now();
+        // 同一时刻两个事件都触发时，只处理一次
+        if (now - lastProcessedTime < 50) return;
+        lastProcessedTime = now;
+
+        let hitSomething = false;
+
+        for (let i = bubbles.length - 1; i >= 0; i--) {
+            const bubble = bubbles[i];
+
+            if (bubble.containsPoint(px, py)) {
+                createExplosion(bubble.x, bubble.y, bubble.color);
+                playPopSound(bubble.radius);
+                bubbles.splice(i, 1);
+                hitSomething = true;
+
+                if (now - lastPopTime < COMBO_TIMEOUT) {
+                    comboCount++;
+                } else {
+                    comboCount = 1;
+                }
+                lastPopTime = now;
+
+                const comboBonus = Math.min(comboCount - 1, 10);
+                score += 10 + comboBonus;
+
+                if (comboCount >= 5) {
+                    showComboPopup(px, py, comboCount);
+                }
+
+                updateUI();
+
+                spawnInterval = Math.max(
+                    MIN_SPAWN_INTERVAL,
+                    800 - Math.floor(score / 20) * 30
+                );
+
+                break;
+            }
+        }
+
+        if (!hitSomething) {
+            comboCount = 0;
+            updateUI();
+        }
+    }
+
+    // pointerdown：现代浏览器标准事件（Chrome/Firefox/Safari/Edge）
+    canvas.addEventListener('pointerdown', function(event) {
+        event.preventDefault();
+        handlePop(event.clientX, event.clientY);
+    });
+
+    // touchstart：兼容旧版微信 WebView（Android 微信 X5 内核）
+    canvas.addEventListener('touchstart', function(event) {
+        event.preventDefault();
+        if (event.touches.length > 0) {
+            handlePop(event.touches[0].clientX, event.touches[0].clientY);
+        }
+    });
+
+    // =====================================================
+    // 第八步：音效引擎（全局复用一个 AudioContext，避免重复创建）
+    // =====================================================
+    let audioCtx = null; // 延迟初始化，第一次点泡泡时才创建
+
+    function getAudioContext() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        // 如果 AudioContext 被浏览器暂停了（某些浏览器需要用户交互后才允许发声），自动恢复
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+        return audioCtx;
+    }
+
+    function playPopSound(radius) {
+        try {
+            const ctx = getAudioContext();
+            const oscillator = ctx.createOscillator();
+            const gainNode = ctx.createGain();
+
+            oscillator.connect(gainNode);
+            gainNode.connect(ctx.destination);
+
+            // 频率范围 160~440Hz，大泡泡音调低，小泡泡音调高
+            oscillator.frequency.value = Math.max(160, 600 - radius * 8);
+            oscillator.type = 'sine';
+
+            gainNode.gain.setValueAtTime(0.15, ctx.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+
+            oscillator.start(ctx.currentTime);
+            oscillator.stop(ctx.currentTime + 0.15);
+        } catch(e) {
+            // 浏览器不支持 Web Audio API，静默处理
+        }
+    }
+
+    // =====================================================
+    // 第九步：显示连击特效文字
+    // =====================================================
+    function showComboPopup(x, y, combo) {
+        const popup = document.createElement('div');
+        popup.className = 'combo-pop';
+        popup.textContent = combo + '连击!';
+        popup.style.left = x + 'px';
+        popup.style.top = y + 'px';
+        document.body.appendChild(popup);
+
+        // 动画播完后自动删除这个元素
+        setTimeout(() => popup.remove(), 800);
+    }
+
+    // =====================================================
+    // 第十步：更新屏幕上的分数和连击数字
+    // =====================================================
+    function updateUI() {
+        document.getElementById('score').textContent = score;
+        const comboEl = document.getElementById('combo');
+        comboEl.textContent = comboCount;
+        // 连击为0时不显示数字，清清爽爽
+        comboEl.style.opacity = comboCount > 0 ? '1' : '0';
+    }
+
+    // =====================================================
+    // 第十一步：主游戏循环 —— 每一帧都在做的事（约60帧/秒）
+    // =====================================================
+    function gameLoop(timestamp) {
+        // timestamp 是浏览器自动传入的当前时间（毫秒）
+
+        // --- 1. 按规定的时间间隔刷出新泡泡 ---
+        if (timestamp - lastSpawnTime > spawnInterval) {
+            bubbles.push(new Bubble());
+            lastSpawnTime = timestamp;
+        }
+
+        // --- 2. 更新所有泡泡的位置 ---
+        for (let i = bubbles.length - 1; i >= 0; i--) {
+            bubbles[i].update();
+
+            // 泡泡飞出屏幕顶部就删掉（不扣分，纯解压）
+            if (bubbles[i].y < -bubbles[i].radius * 2) {
+                bubbles.splice(i, 1);
+            }
+        }
+
+        // --- 3. 更新所有粒子的位置，死掉的删掉 ---
+        for (let i = particles.length - 1; i >= 0; i--) {
+            particles[i].update();
+            if (particles[i].isDead()) {
+                particles.splice(i, 1);
+            }
+        }
+
+        // --- 4. 清空画布，准备画新的一帧 ---
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // --- 5. 先画泡泡 ---
+        for (const bubble of bubbles) {
+            bubble.draw();
+        }
+
+        // --- 6. 再画粒子（粒子画在上层更有爆炸感） ---
+        for (const particle of particles) {
+            particle.draw();
+        }
+
+        // --- 7. 请求浏览器画下一帧（形成无限循环） ---
+        requestAnimationFrame(gameLoop);
+    }
+
+    // =====================================================
+    // 第十二步：启动游戏！
+    // =====================================================
+    // 先偷偷创建几个初始泡泡，让玩家一打开就看到泡泡在飘
+    for (let i = 0; i < 5; i++) {
+        const b = new Bubble();
+        b.y = random(canvas.height * 0.2, canvas.height); // 散布在屏幕不同高度
+        bubbles.push(b);
+    }
+
+    // 启动主循环
+    requestAnimationFrame(gameLoop);
+
+    // 微信切到后台时暂停 spawn，回来时恢复
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) {
+            lastSpawnTime = performance.now(); // 重置计时，避免切回来瞬间刷出一堆泡泡
+        }
+    });
+
+    console.log('🫧 泡泡游戏已就绪！点击泡泡试试看~');
+    </script>
+</body>
+</html>
